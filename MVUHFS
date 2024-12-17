@@ -1,0 +1,212 @@
+function [W,A,G,obj]= MVUHFS(X, r, alpha, beta, gamma, sigma)
+% Input:
+%       - X: the original data, 1 * View, and each View belongs to one of
+%       multi-view data, the size is nSam * nFea
+%       - r: the low-rank parameter
+%       - MaxIter: the number of iteration
+%       - c: the number of clusters
+%       - m: the number of achors (multiple means(MM) )
+%       - BiGraph: the matrix of size nSmp x nMM
+%       - A: the multiple means matrix of size nFea x nMM
+% Output:
+%       - Pv: nSam * r
+%       - Qv: nSam * r
+%       - Gv: nSam * nSam
+%       - B:  nSam * L
+%       - A:  nSam * nSam
+%       - Wv: nFea * L
+%       
+%%  Objective function:
+% min_{P^v, Q^v, G^v, B, A, W^v, \mu^v}
+% ||\phi(X^v)-P^v*Q^v*\phi(X^v)||_F^2 + 1/\mu^v ||A-G^v||_F^2
+% + \alpha Tr(B^T*L_A*B) + \beta ||\phi(X^v)*W^v - B||_F^2
+% + \gamma ||W^v||_\rhi
+% s.t., \sum_{j}^{a_ij}=1, a_ij≥0, B∈{0,1}^{n*l}, \mu^v≥0, 1^T*\mu^v=1
+%
+%%  Solutions:
+%
+%
+%% Example: 
+% X{1} = rand(100,10); X{2} = rand(100,20); [W,A,G,obj] = MVUHFS(X)
+
+if (~exist('r','var'))    
+    r = 5; 
+end
+if (~exist('alpha','var'))    
+    alpha = 2; 
+end
+if (~exist('beta','var'))    
+    beta = 1;
+end
+if (~exist('gamma','var'))    
+    gamma = 10; 
+end
+if (~exist('sigma','var'))    
+    sigma = 0.05; 
+end
+
+lambda = 2;
+theta = 5;
+rho = 0.01;
+%------------Initializing parameters--------------
+viewNum = size(X,2);
+nSam = size(X{1},1);
+L = 8;  % Hashing code length
+
+XXT = cell(1,viewNum);
+P = cell(1,viewNum);
+Q = cell(1,viewNum);
+G = cell(1,viewNum);
+W = cell(1,viewNum);
+D = cell(1,viewNum);
+XW = cell(1,viewNum);
+XWsum = zeros(nSam,L);
+
+for viewnum = 1:viewNum
+    P{viewnum} = rand(nSam, r); 
+    Q{viewnum} = rand(nSam, r);
+    G{viewnum} = rand(nSam, nSam);
+    W{viewnum} = rand(size(X{viewnum},2),L);
+    D{viewnum} = WD2norm(W{viewnum},sigma);
+    XXT{viewnum} = X{viewnum}*X{viewnum}';
+    XW{viewnum} = X{viewnum}*W{viewnum};
+    XWsum = XWsum + XW{viewnum};
+end
+
+% G and A
+options = [];
+options.Metric = 'HeatKernel';
+options.NeighborMode = 'KNN';
+options.WeightMode = 'Cosine';
+options.k = 10;
+for i = 1:viewNum
+    W1 = constructW(X{i},options);
+    G{i} = W1;
+end
+temp_G = zeros(nSam, nSam);
+for i=1:viewNum
+    temp_G = temp_G + G{i};
+end
+A = temp_G/viewNum;
+
+B = rand(nSam, L);
+mua = rand(1,viewNum);
+mu = mua/sum(mua);
+
+eps =10^-4;
+flagP = 1;
+iter = 1;
+obji =1;
+
+%------------     Optimization     --------------
+while 1
+%     fprintf('The %d-th iteration...\n',iter);
+    
+    for v = 1:viewNum
+% To update P and Q
+        P{v} = XXT{v}*Q{v}/(Q{v}'*XXT{v}*Q{v});
+        Q{v} = P{v}/(P{v}'*P{v});
+
+% To update G
+        G{v} = (mu(v)*P{v}*Q{v}' + A)./(mu(v) + 1);
+
+% To update W and D
+%         W0 = 0;
+        W0 = 2*beta * B' * X{v} / (2*X{v}'*X{v} + gamma * (D{v} + D{v}'));
+        W{v} = W0';
+        D{v} = WD2norm(W{v},sigma);
+
+% To update mu
+        mu(v) = 0.5/norm(A-G{v},'fro');
+        
+        XW{v} = X{v}*W{v};
+        XWsum = XWsum + XW{v};
+%         v = v + 1;
+    end
+    mu = mua/sum(mua);
+    
+% To update A
+    dist = L2_distance_1(B',B');
+    A = zeros(nSam);
+    for i = 1:nSam
+        a0 = zeros(1,nSam);
+        for v = 1:viewNum
+            temp = G{v};
+            a0 = a0+mu(1,v)*temp(i,:);
+        end
+        idxa0 = find(a0>0);
+        ai = a0(idxa0);
+        di = dist(i,idxa0);
+        ad = (ai-0.25*di)/sum(mu);
+        A(i,idxa0) = ProjectOntoSimplex(ad, 1);
+%         A(i,idxa0) = EProjSimplex_new(ad);
+    end
+    A = (A+A')/2;
+    D1 = diag(sum(A));
+    L_A = D1-A;   
+
+% To update Y
+    Y = 0.5 * (sign(-alpha*L_A*B + lambda*B +theta)+1);    
+    
+% To update B
+    B = 0.5 * (sign(2*beta*XWsum - alpha*L_A*Y + lambda*Y - theta)+1);
+    
+% To update theta and lambda
+    theta = theta + lambda*(B - Y);
+    lambda = rho * lambda;
+
+%% calculate obj
+  
+    sum_obj_term1 = 0;
+    sum_obj_term2 = 0;
+    sum_obj_term4 = 0;
+    sum_obj_term5 = 0;
+    
+    for ii = 1:viewNum
+        sum_obj_term1 = sum_obj_term1 + norm((X{ii} - P{ii}*Q{ii}'*X{ii}),'fro')^2; 
+        sum_obj_term2 = sum_obj_term2 + mu(ii)*norm(A - G{ii},'fro')^2;
+        sum_obj_term4 = sum_obj_term4 + beta * norm(X{ii}*W{ii} - B,'fro')^2;
+        ii = ii + 1;
+    end
+    clear ii
+    for ii = 1:viewNum
+        sum_d = size(X{ii},2);
+        WW = W{ii};
+        sum_obj_term51 = 0;
+        for jj = 1:sum_d
+            sum_obj_term51 = sum_obj_term51 + (1+sigma)*norm(WW(jj,:),2) / (norm(WW(jj,:),2)+sigma);
+%             jj = jj + 1;
+        end
+%         ii = ii + 1;
+        sum_obj_term5 = sum_obj_term5 + sum_obj_term51;
+    end
+   
+    sum_obj_term3 = alpha * sum(sum(B'*L_A*B));
+
+    obj(iter) = sum_obj_term1 + sum_obj_term2 + sum_obj_term3 + sum_obj_term4 + sum_obj_term5;    
+%     obj1(iter) = sum_obj_term1;
+%     obj2(iter) = sum_obj_term2;
+%     obj3(iter) = sum_obj_term3;
+%     obj4(iter) = sum_obj_term4;
+%     obj5(iter) = sum_obj_term5;
+    
+    cver = abs((obj(iter)-obji)/obji);
+    obji = obj(iter);
+    iter = iter + 1;
+    if ( cver < eps && iter > 2) || iter == 20,    break,     end
+    
+end
+if flagP == 1,  plot(obj), end
+end
+
+function Dim = WD2norm(Wim, sigma)
+
+dim = size(Wim,1);
+Di = zeros(1,dim);
+for d = 1:dim
+    normW = norm(Wim(d,:),2);
+    Di(d) = (1+sigma) * (normW + 2*sigma)/(2 *(normW + sigma)^2); 
+end
+
+Dim = diag(Di);
+end
