@@ -184,11 +184,6 @@ while 1
     sum_obj_term3 = alpha * sum(sum(B'*L_A*B));
 
     obj(iter) = sum_obj_term1 + sum_obj_term2 + sum_obj_term3 + sum_obj_term4 + sum_obj_term5;    
-%     obj1(iter) = sum_obj_term1;
-%     obj2(iter) = sum_obj_term2;
-%     obj3(iter) = sum_obj_term3;
-%     obj4(iter) = sum_obj_term4;
-%     obj5(iter) = sum_obj_term5;
     
     cver = abs((obj(iter)-obji)/obji);
     obji = obj(iter);
